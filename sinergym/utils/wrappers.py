@@ -2148,3 +2148,67 @@ class OfficeGridStorageSmoothingActionConstraintsWrapper(
             random_rate_index = np.random.randint(2, 4)
             act[random_rate_index] = null_value
         return act
+    
+
+class LowFrequencyControlWrapper(gym.Wrapper):
+    """Wrapper that allows actions to be applied at a lower frequency while maintaining high-fidelity simulation."""
+    
+    def __init__(self, env, steps_per_control=24, action_transition='step'):
+        """
+        Args:
+            env: The EplusEnv environment to wrap
+            steps_per_control: Number of simulation steps between agent actions (e.g., 24 for daily control)
+            action_transition: How to transition between actions ('step' or 'ramp')
+        """
+        super().__init__(env)
+        self.steps_per_control = steps_per_control
+        self.action_transition = action_transition
+        self.current_action = None
+        self.last_action = None
+        self.step_count = 0
+        
+        # Log wrapper configuration
+        self.env.logger.info(f"Using Low Frequency Control Wrapper: actions every {steps_per_control} steps")
+        
+    def reset(self, **kwargs):
+        """Reset the environment and the wrapper's internal state."""
+        self.step_count = 0
+        obs, info = self.env.reset(**kwargs)
+        self.current_action = np.zeros(self.action_space.shape)
+        self.last_action = self.current_action.copy()
+        return obs, info
+        
+    def step(self, action=None):
+        """Execute environment step with controlled action frequency."""
+        # Only use new action at specified intervals
+        if self.step_count % self.steps_per_control == 0:
+            self.last_action = self.current_action.copy() if self.current_action is not None else action
+            self.current_action = action
+            self.env.logger.debug(f"New control action applied at step {self.step_count}: {action}")
+        
+        # Determine the action to use based on transition method
+        applied_action = self._get_transition_action()
+            
+        # Execute the step in the base environment
+        obs, reward, terminated, truncated, info = self.env.step(applied_action)
+        
+        # Add tracking information to info dict
+        info['control_step'] = (self.step_count % self.steps_per_control == 0)
+        info['steps_until_next_control'] = self.steps_per_control - (self.step_count % self.steps_per_control) - 1
+        
+        self.step_count += 1
+        return obs, reward, terminated, truncated, info
+    
+    def _get_transition_action(self):
+        """Calculate action based on transition method."""
+        if self.action_transition == 'step' or self.last_action is None:
+            return self.current_action
+        elif self.action_transition == 'ramp':
+            # Calculate a linear interpolation between last_action and current_action
+            progress = (self.step_count % self.steps_per_control) / self.steps_per_control
+            return self.last_action + progress * (self.current_action - self.last_action)
+        else:
+            self.env.logger.warning(f"Unknown action transition method: {self.action_transition}. Using 'step'.")
+            return self.current_action
+
+
